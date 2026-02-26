@@ -10,8 +10,8 @@ config_version=5
 
 [application]
 
-config/name="Moonstone"
-config/description="A Godot project."
+config/name="Satellite Simulation"
+config/description="Physics simulation of HDTN and 30 transmission algorithms for satellite packet transfer."
 run/main_scene="res://scenes/simulation/hdtn_sim.tscn"
 config/features=PackedStringArray("4.3", "Forward Plus")
 config/icon="res://icon.svg"

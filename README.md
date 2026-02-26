@@ -1,6 +1,6 @@
-# Moonstone
+# Satellite Simulation
 
-A Godot 4.x project featuring an **HDTN (High-rate Delay Tolerant Network) demonstration** based on [NASA HDTN](https://github.com/nasa/HDTN).
+A Godot 4.x project featuring an **HDTN (High-rate Delay Tolerant Network) demonstration** and physics-based simulation of **30 transmission algorithms** for satellite packet transfer, based on [NASA HDTN](https://github.com/nasa/HDTN).
 
 ## Requirements
 
@@ -28,7 +28,13 @@ The main scene runs a visual simulation of NASA-style Delay Tolerant Networking 
 - **Contact timeline** – Bottom-left panel shows each contact’s window; green = link up at current sim time.
 - **Telemetry panel** – Right side shows per-node HDTN-style stats: Ingress count, Egress sent, Storage used/cap, Delivered, Dropped.
 - **Packet physics** – Packets move as physics bodies (CharacterBody2D) along links at configurable speed; delivery occurs when the body reaches the destination node. Toggle with `use_physics_packets` on the sim controller.
-- **UI** – Sim time, Pause/Resume, speed (1x, 2x, 10x), global Storage / In flight / Delivered.
+- **30 transmission algorithms** – One algorithm is active for all nodes at a time. It controls:
+  - **Scheduling (1–10):** Which bundle to send next (FIFO, LIFO, Shortest/Longest Job First, Priority, Round Robin, etc.).
+  - **Routing (11–18):** Which link to use when several are up (Earliest/Longest Contact, Max Rate, Random, Round Robin, etc.).
+  - **ARQ (19–22):** Placeholders for retransmission (No ARQ, Go-Back-N, Selective Repeat, Stop-and-Wait).
+  - **Drop policy (23–30):** What to do when storage is full (Drop New, Drop Oldest/Newest, Random, RED-like, Priority Drop, etc.).
+  See [docs/TRANSMISSION_ALGORITHMS.md](docs/TRANSMISSION_ALGORITHMS.md) for the full list.
+- **UI** – Sim time, Pause/Resume, speed (1x, 2x, 10x), **Algorithm** dropdown (30 options), global Storage / In flight / Delivered.
 
 Green links = contact window open; gray = closed. Per-node stats: S (storage), E (egress queue), F (in flight), D (delivered).
 
@@ -44,5 +50,7 @@ Green links = contact window open; gray = closed. Per-node stats: S (storage), E
 - `scripts/simulation/bundle.gd` – Bundle data type
 - `scripts/simulation/packet_body.gd` – Physics-driven packet (CharacterBody2D) for link traversal
 - `scenes/simulation/packet_body.tscn` – Packet body scene
+- `scripts/simulation/transmission_algorithms.gd` – Registry and behavior for 30 transmission algorithms
 - `data/contact_plan.json` – NASA-style contact plan (source, dest, start/end time, rate, optional storageCapacityBytes)
+- `docs/TRANSMISSION_ALGORITHMS.md` – List and short description of all 30 algorithms
 - `icon.svg` – Project icon

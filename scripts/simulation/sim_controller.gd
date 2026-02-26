@@ -9,6 +9,7 @@ const PACKET_SPEED_PIXELS_PER_SEC: float = 120.0  # game physics: packet propaga
 
 @export var sim_speed: float = 1.0  # 1.0 = 1 real sec = 1 sim sec
 @export var use_physics_packets: bool = true  # packets move as physics bodies along links
+@export var current_algorithm_id: int = 0  # TransmissionAlgorithms.Algorithm (0=FIFO, 1=LIFO, ... 29)
 @export var auto_spawn_bundles: bool = true
 @export var spawn_interval_ms: int = 500
 @export var spawn_source: int = 102
@@ -97,6 +98,7 @@ func _create_nodes() -> void:
 		node_inst.node_id = node_id
 		node_inst.position = pos
 		node_inst.set_router(router)
+		node_inst.transmission_algorithm_id = current_algorithm_id
 		node_container.add_child(node_inst)
 		nodes[node_id] = node_inst
 		node_inst.set_sim_time(sim_time_ms)
@@ -136,6 +138,12 @@ func _setup_ui() -> void:
 	var s10 := get_node_or_null("UI/TopBar/Speed10") as Button
 	if s10:
 		s10.pressed.connect(_on_speed_10x)
+	var alg_btn := get_node_or_null("UI/AlgorithmBar/AlgorithmOption") as OptionButton
+	if alg_btn:
+		for i in range(TransmissionAlgorithms.ALGORITHM_COUNT):
+			alg_btn.add_item(TransmissionAlgorithms.get_algorithm_name(i), i)
+		alg_btn.select(current_algorithm_id)
+		alg_btn.item_selected.connect(_on_algorithm_selected)
 
 
 func _on_pause_pressed() -> void:
@@ -155,6 +163,16 @@ func _on_speed_2x() -> void:
 
 func _on_speed_10x() -> void:
 	set_speed(10.0)
+
+
+func _on_algorithm_selected(index: int) -> void:
+	current_algorithm_id = index
+	_apply_algorithm()
+
+
+func _apply_algorithm() -> void:
+	for node in nodes.values():
+		(node as DtnNode).transmission_algorithm_id = current_algorithm_id
 
 
 func _process(delta: float) -> void:
@@ -333,7 +351,9 @@ func _update_ui_labels() -> void:
 		time_label.text = "Time: %d s" % (sim_time_ms / 1000)
 	var stats_label := get_node_or_null("UI/TopBar/StatsLabel") as Label
 	if stats_label:
-		stats_label.text = "Storage: %d  In flight: %d  Delivered: %d" % [
+		var alg_name := TransmissionAlgorithms.get_algorithm_name(current_algorithm_id)
+		stats_label.text = "[%s]  Storage: %d  In flight: %d  Delivered: %d" % [
+			alg_name,
 			get_total_storage_count(),
 			get_total_in_flight_count(),
 			total_delivered

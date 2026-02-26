@@ -16,12 +16,18 @@ var _storage_dropped_count: int = 0  # dropped due to storage full
 var router: DtnRouter
 var max_storage_bytes: int = 1048576  # HDTN storage capacity
 var sim_time_ms: int = 0
+var transmission_algorithm_id: int = TransmissionAlgorithms.Algorithm.FIFO
+var _rng: RandomNumberGenerator
 
 # Link state cache (as source): dest -> bool
 var _link_up: Dictionary = {}
+var _link_order_round_robin: int = 0
+var _dest_round_robin: int = 0
 
 
 func _ready() -> void:
+	_rng = RandomNumberGenerator.new()
+	_rng.randomize()
 	_update_ui()
 
 
@@ -39,8 +45,9 @@ func set_sim_time(ms: int) -> void:
 		for dest in _storage.keys():
 			if _link_up.get(dest, false):
 				var list: Array = _storage[dest]
-				while list.size() > 0:
-					_egress_queue.append(list.pop_back())
+				var ordered := TransmissionAlgorithms.order_storage_to_egress(list, transmission_algorithm_id)
+				for b in ordered:
+					_egress_queue.append(b)
 				_storage.erase(dest)
 	_update_ui()
 
@@ -66,10 +73,33 @@ func receive_bundle(bundle: DtnBundle) -> void:
 		_egress_queue.append(bundle)
 	else:
 		var bundle_bytes := (bundle.size_bits + 7) / 8
-		if get_storage_used_bytes() + bundle_bytes > max_storage_bytes:
-			_storage_dropped_count += 1
-			_update_ui()
-			return
+		var used := get_storage_used_bytes()
+		if used + bundle_bytes > max_storage_bytes:
+			var drop := TransmissionAlgorithms.choose_drop_from_storage(_storage, bundle, used, max_storage_bytes, bundle_bytes, transmission_algorithm_id, _rng)
+			if drop == "reject":
+				_storage_dropped_count += 1
+				_update_ui()
+				return
+			if drop is Array and drop.size() >= 2:
+				var dkey = drop[0]
+				var idx: int = drop[1]
+				if _storage.has(dkey) and _storage[dkey].size() > idx:
+					_storage[dkey].remove_at(idx)
+					_storage_dropped_count += 1
+			# If we dropped something, retry space (might need to drop more for RED/FairShare)
+			while get_storage_used_bytes() + bundle_bytes > max_storage_bytes:
+				used = get_storage_used_bytes()
+				drop = TransmissionAlgorithms.choose_drop_from_storage(_storage, bundle, used, max_storage_bytes, bundle_bytes, transmission_algorithm_id, _rng)
+				if drop == "reject":
+					_storage_dropped_count += 1
+					_update_ui()
+					return
+				if drop is Array and drop.size() >= 2:
+					var dkey = drop[0]
+					var i: int = drop[1]
+					if _storage.has(dkey) and _storage[dkey].size() > i:
+						_storage[dkey].remove_at(i)
+						_storage_dropped_count += 1
 		if not _storage.has(bundle.dest):
 			_storage[bundle.dest] = []
 		_storage[bundle.dest].append(bundle)
@@ -81,18 +111,26 @@ func step_egress(delta: float) -> Array:
 	if not router:
 		return []
 	var completed: Array = []
+	var link_dests: Array = []
+	for d in _link_up.keys():
+		if _link_up[d]:
+			link_dests.append(d)
+	var ordered_dests := TransmissionAlgorithms.order_links_for_egress(link_dests, router, node_id, sim_time_ms, transmission_algorithm_id, _rng)
+	if ordered_dests.is_empty():
+		ordered_dests = link_dests
+	# Round-robin link: rotate start index
+	if transmission_algorithm_id == TransmissionAlgorithms.Algorithm.ROUND_ROBIN_LINK and ordered_dests.size() > 0:
+		_link_order_round_robin = _link_order_round_robin % ordered_dests.size()
+		var rot: Array = []
+		for i in range(ordered_dests.size()):
+			rot.append(ordered_dests[(i + _link_order_round_robin) % ordered_dests.size()])
+		ordered_dests = rot
 	# 1) Dequeue from egress_queue into in_flight (rate limited per dest)
-	for dest in _link_up.keys():
-		if not _link_up[dest]:
-			continue
+	for dest in ordered_dests:
 		var rate := router.get_rate_bits_per_sec(node_id, dest)
 		var bits_this_step := int(rate * delta)
 		while bits_this_step > 0 and _egress_queue.size() > 0:
-			var idx := -1
-			for i in range(_egress_queue.size()):
-				if _egress_queue[i].dest == dest:
-					idx = i
-					break
+			var idx := TransmissionAlgorithms.pick_bundle_index_for_dest(_egress_queue, dest, transmission_algorithm_id, _rng)
 			if idx < 0:
 				break
 			var bundle: DtnBundle = _egress_queue[idx]
@@ -109,6 +147,8 @@ func step_egress(delta: float) -> Array:
 				})
 				bits_this_step = 0
 				break
+	if transmission_algorithm_id == TransmissionAlgorithms.Algorithm.ROUND_ROBIN_LINK and ordered_dests.size() > 0:
+		_link_order_round_robin += 1
 	# 2) Advance in_flight by rate*delta per dest
 	var still_flying: Array = []
 	for entry in _in_flight:

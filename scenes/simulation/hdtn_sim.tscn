@@ -64,6 +64,24 @@ theme_override_colors/font_color = Color(0.85, 0.85, 1, 1)
 theme_override_font_sizes/font_size = 14
 text = "Storage: 0  In flight: 0  Delivered: 0"
 
+[node name="AlgorithmBar" type="HBoxContainer" parent="UI"]
+anchors_preset = 10
+anchor_right = 1.0
+offset_top = 44.0
+offset_bottom = 72.0
+grow_horizontal = 2
+
+[node name="AlgorithmLabel" type="Label" parent="UI/AlgorithmBar"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.85, 0.85, 0.95, 1)
+theme_override_font_sizes/font_size = 12
+text = "Algorithm:"
+
+[node name="AlgorithmOption" type="OptionButton" parent="UI/AlgorithmBar"]
+layout_mode = 2
+custom_minimum_size = Vector2(220, 0)
+theme_override_font_sizes/font_size = 11
+
 [node name="ContactTimeline" type="PanelContainer" parent="UI"]
 anchors_preset = 2
 anchor_top = 1.0
@@ -94,9 +112,9 @@ anchors_preset = 1
 anchor_left = 1.0
 anchor_right = 1.0
 offset_left = -320.0
-offset_top = 48.0
+offset_top = 72.0
 offset_right = -16.0
-offset_bottom = 220.0
+offset_bottom = 244.0
 grow_horizontal = 0
 
 [node name="VBox" type="VBoxContainer" parent="UI/TelemetryPanel"]
