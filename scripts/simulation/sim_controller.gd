@@ -5,8 +5,10 @@ class_name SimController
 
 const CONTACT_PLAN_PATH := "res://data/contact_plan.json"
 const DEFAULT_BUNDLE_SIZE_BITS := 512
+const PACKET_SPEED_PIXELS_PER_SEC: float = 120.0  # game physics: packet propagation speed
 
 @export var sim_speed: float = 1.0  # 1.0 = 1 real sec = 1 sim sec
+@export var use_physics_packets: bool = true  # packets move as physics bodies along links
 @export var auto_spawn_bundles: bool = true
 @export var spawn_interval_ms: int = 500
 @export var spawn_source: int = 102
@@ -19,12 +21,17 @@ var nodes: Dictionary = {}  # node_id -> DtnNode
 var links: Array = []  # { "source": int, "dest": int, "line": Line2D }
 var node_container: Node2D
 var link_container: Node2D
+var packet_container: Node2D
 var total_delivered: int = 0
 var _next_spawn_ms: int = 0
 
 var dtn_node_scene: PackedScene
+var packet_body_scene: PackedScene
 var link_up_color := Color(0.2, 0.9, 0.3)
 var link_down_color := Color(0.35, 0.35, 0.4)
+var _contact_timeline_contacts: Array = []  # Control nodes for each contact bar
+var _telemetry_labels: Dictionary = {}  # node_id -> Label
+var _timeline_max_ms: int = 1
 
 
 func _ready() -> void:
@@ -36,11 +43,16 @@ func _ready() -> void:
 	if not dtn_node_scene:
 		push_error("SimController: could not load dtn_node.tscn")
 		return
+	packet_body_scene = load("res://scenes/simulation/packet_body.tscn") as PackedScene
+	if not packet_body_scene:
+		use_physics_packets = false
 	_setup_containers()
 	_create_nodes()
 	_create_links()
 	_update_link_colors()
 	_setup_ui()
+	_build_contact_timeline()
+	_build_telemetry_panel()
 	if auto_spawn_bundles:
 		_next_spawn_ms = 0
 
@@ -62,6 +74,13 @@ func _setup_containers() -> void:
 	var center := view_size / 2.0
 	node_container.position = center
 	link_container.position = center
+	packet_container = get_node_or_null("PacketContainer")
+	if not packet_container:
+		packet_container = Node2D.new()
+		packet_container.name = "PacketContainer"
+		add_child(packet_container)
+	packet_container.position = center
+	packet_container.z_index = 1
 
 
 func _create_nodes() -> void:
@@ -155,7 +174,7 @@ func _process(delta: float) -> void:
 		(node as DtnNode).set_sim_time(sim_time_ms)
 	_update_link_colors()
 
-	# Step egress and deliver completed bundles
+	# Step egress and deliver completed bundles (or spawn physics packets)
 	var delta_sec := delta * sim_speed
 	for node_id in nodes.keys():
 		var node: DtnNode = nodes[node_id]
@@ -163,17 +182,35 @@ func _process(delta: float) -> void:
 		for pair in completed:
 			var dest_id: int = pair[0]
 			var bundle: DtnBundle = pair[1]
-			if nodes.has(dest_id):
-				nodes[dest_id].receive_bundle(bundle)
-				if bundle.dest == dest_id:
-					total_delivered += 1
+			if use_physics_packets and packet_body_scene and packet_container and nodes.has(bundle.source) and nodes.has(dest_id):
+				_spawn_packet_body(node_id, dest_id, bundle)
+			elif nodes.has(dest_id):
+				_deliver_bundle(dest_id, bundle)
 
 
-func _spawn_bundle(source_id: int, dest_id: int) -> void:
-	if not nodes.has(source_id):
+func _spawn_packet_body(source_node_id: int, dest_node_id: int, bundle: DtnBundle) -> void:
+	var src_node: DtnNode = nodes[source_node_id]
+	var dst_node: DtnNode = nodes[dest_node_id]
+	var start_pos: Vector2 = src_node.position
+	var target_pos: Vector2 = dst_node.position
+	var speed: float = PACKET_SPEED_PIXELS_PER_SEC * sim_speed
+	var body: PacketBody = packet_body_scene.instantiate() as PacketBody
+	if not body:
+		_deliver_bundle(dest_node_id, bundle)
 		return
-	var bundle := DtnBundle.new(source_id, dest_id, DEFAULT_BUNDLE_SIZE_BITS, sim_time_ms)
-	nodes[source_id].receive_bundle(bundle)
+	body.setup(start_pos, target_pos, bundle, dest_node_id, speed)
+	body.arrived.connect(func(dest_id: int, b: DtnBundle) -> void:
+		_deliver_bundle(dest_id, b)
+		body.queue_free()
+	)
+	packet_container.add_child(body)
+
+
+func _deliver_bundle(dest_node_id: int, bundle: DtnBundle) -> void:
+	if nodes.has(dest_node_id):
+		nodes[dest_node_id].receive_bundle(bundle)
+		if bundle.dest == dest_node_id:
+			total_delivered += 1
 
 
 func inject_bundle(source_id: int, dest_id: int, size_bits: int := DEFAULT_BUNDLE_SIZE_BITS) -> void:
@@ -205,6 +242,91 @@ func get_total_in_flight_count() -> int:
 	return n
 
 
+func _build_contact_timeline() -> void:
+	var contacts_box := get_node_or_null("UI/ContactTimeline/VBox/Contacts") as VBoxContainer
+	if not contacts_box or not router:
+		return
+	var all := router.get_all_contacts()
+	_timeline_max_ms = 0
+	for c in all:
+		if c["endTime"] > _timeline_max_ms:
+			_timeline_max_ms = c["endTime"]
+	if _timeline_max_ms < 1:
+		_timeline_max_ms = 1
+	for c in all:
+		var row := HBoxContainer.new()
+		row.custom_minimum_size.y = 18
+		var lbl := Label.new()
+		lbl.text = "%d → %d" % [c["source"], c["dest"]]
+		lbl.custom_minimum_size.x = 56
+		row.add_child(lbl)
+		var bar := ProgressBar.new()
+		bar.custom_minimum_size.x = 280
+		bar.show_percentage = false
+		bar.min_value = 0
+		bar.max_value = 100
+		bar.set_meta("start_pct", 100.0 * float(c["startTime"]) / float(_timeline_max_ms))
+		bar.set_meta("end_pct", 100.0 * float(c["endTime"]) / float(_timeline_max_ms))
+		row.add_child(bar)
+		contacts_box.add_child(row)
+		_contact_timeline_contacts.append(bar)
+
+
+func _update_contact_timeline() -> void:
+	var t := sim_time_ms
+	var cursor_pct := 100.0 * float(t) / float(_timeline_max_ms) if _timeline_max_ms > 0 else 0.0
+	for bar in _contact_timeline_contacts:
+		if not bar is ProgressBar:
+			continue
+		var start_pct: float = bar.get_meta("start_pct", 0)
+		var end_pct: float = bar.get_meta("end_pct", 100)
+		bar.min_value = 0
+		bar.max_value = 100
+		bar.value = start_pct  # fill from 0 to start = empty segment; then we show fill from start to end
+		# ProgressBar fills 0..value. We want segment [start_pct, end_pct] visible. Use value = end_pct, min = start_pct so fill is start->end
+		bar.min_value = start_pct
+		bar.max_value = end_pct
+		bar.value = end_pct if cursor_pct >= start_pct and cursor_pct < end_pct else start_pct
+		if cursor_pct >= start_pct and cursor_pct < end_pct:
+			bar.modulate = link_up_color
+		else:
+			bar.modulate = Color(0.5, 0.5, 0.55)
+
+
+func _build_telemetry_panel() -> void:
+	var list := get_node_or_null("UI/TelemetryPanel/VBox/TelemetryScroll/TelemetryList") as VBoxContainer
+	if not list or not router:
+		return
+	for node_id in nodes.keys():
+		var lbl := Label.new()
+		lbl.name = "Node%d" % node_id
+		lbl.text = "Node %d: -" % node_id
+		lbl.autowrap_mode = TextServer.AUTOWRAP_OFF
+		list.add_child(lbl)
+		_telemetry_labels[node_id] = lbl
+
+
+func _update_telemetry() -> void:
+	for node_id in _telemetry_labels:
+		var lbl: Label = _telemetry_labels[node_id]
+		if not lbl:
+			continue
+		if not nodes.has(node_id):
+			continue
+		var node: DtnNode = nodes[node_id]
+		var cap_kb := node.max_storage_bytes / 1024
+		var used_kb := node.get_storage_used_bytes() / 1024
+		lbl.text = "N%d In:%d Eg:%d St:%d/%dKB D:%d Drp:%d" % [
+			node_id,
+			node.get_ingress_count(),
+			node.get_egress_sent_count(),
+			used_kb,
+			cap_kb,
+			node.get_delivered_count(),
+			node.get_storage_dropped_count()
+		]
+
+
 func _update_ui_labels() -> void:
 	var time_label := get_node_or_null("UI/TopBar/TimeLabel") as Label
 	if time_label:
@@ -216,3 +338,5 @@ func _update_ui_labels() -> void:
 			get_total_in_flight_count(),
 			total_delivered
 		]
+	_update_contact_timeline()
+	_update_telemetry()

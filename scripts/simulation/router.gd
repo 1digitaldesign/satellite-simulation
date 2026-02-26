@@ -5,6 +5,7 @@ extends RefCounted
 ## Matches NASA HDTN: if startTime <= t < endTime then link is available.
 
 var _contacts: Array = []
+var storage_capacity_bytes: int = 1048576  # HDTN-style per-node storage cap (default 1 MiB)
 
 
 func load_contact_plan(json_path: String) -> bool:
@@ -23,6 +24,7 @@ func load_contact_plan(json_path: String) -> bool:
 	if not data is Dictionary or not "contacts" in data:
 		push_error("Router: contact plan must have 'contacts' array")
 		return false
+	storage_capacity_bytes = int(data.get("storageCapacityBytes", 1048576))
 	_contacts.clear()
 	for c in data["contacts"]:
 		if c is Dictionary and "source" in c and "dest" in c and "startTime" in c and "endTime" in c:

@@ -9,8 +9,12 @@ var _storage: Dictionary = {}  # dest -> Array
 var _egress_queue: Array = []
 var _in_flight: Array = []  # { "bundle": DtnBundle, "remaining_bits": int, "dest": int }
 var _delivered_count: int = 0
+var _ingress_count: int = 0  # total bundles received (including delivered)
+var _egress_sent_count: int = 0
+var _storage_dropped_count: int = 0  # dropped due to storage full
 
 var router: DtnRouter
+var max_storage_bytes: int = 1048576  # HDTN storage capacity
 var sim_time_ms: int = 0
 
 # Link state cache (as source): dest -> bool
@@ -23,6 +27,8 @@ func _ready() -> void:
 
 func set_router(r: DtnRouter) -> void:
 	router = r
+	if r:
+		max_storage_bytes = r.storage_capacity_bytes
 
 
 func set_sim_time(ms: int) -> void:
@@ -50,6 +56,7 @@ func _update_link_state() -> void:
 
 
 func receive_bundle(bundle: DtnBundle) -> void:
+	_ingress_count += 1
 	if bundle.dest == node_id:
 		_delivered_count += 1
 		_update_ui()
@@ -58,6 +65,11 @@ func receive_bundle(bundle: DtnBundle) -> void:
 	if link_available:
 		_egress_queue.append(bundle)
 	else:
+		var bundle_bytes := (bundle.size_bits + 7) / 8
+		if get_storage_used_bytes() + bundle_bytes > max_storage_bytes:
+			_storage_dropped_count += 1
+			_update_ui()
+			return
 		if not _storage.has(bundle.dest):
 			_storage[bundle.dest] = []
 		_storage[bundle.dest].append(bundle)
@@ -87,6 +99,7 @@ func step_egress(delta: float) -> Array:
 			_egress_queue.remove_at(idx)
 			if bits_this_step >= bundle.size_bits:
 				bits_this_step -= bundle.size_bits
+				_egress_sent_count += 1
 				completed.append([dest, bundle])
 			else:
 				_in_flight.append({
@@ -104,6 +117,7 @@ func step_egress(delta: float) -> Array:
 		var bits := int(rate * delta)
 		entry["remaining_bits"] -= bits
 		if entry["remaining_bits"] <= 0:
+			_egress_sent_count += 1
 			completed.append([dest_id, entry["bundle"]])
 		else:
 			still_flying.append(entry)
@@ -117,6 +131,26 @@ func get_storage_count() -> int:
 	for list in _storage.values():
 		n += list.size()
 	return n
+
+
+func get_storage_used_bytes() -> int:
+	var total := 0
+	for list in _storage.values():
+		for b in list:
+			total += (b.size_bits + 7) / 8
+	return total
+
+
+func get_ingress_count() -> int:
+	return _ingress_count
+
+
+func get_egress_sent_count() -> int:
+	return _egress_sent_count
+
+
+func get_storage_dropped_count() -> int:
+	return _storage_dropped_count
 
 
 func get_egress_queue_count() -> int:
@@ -136,3 +170,8 @@ func _update_ui() -> void:
 		$Label.text = "Node %d" % node_id
 	if has_node("StatsLabel"):
 		$StatsLabel.text = "S:%d E:%d F:%d D:%d" % [get_storage_count(), get_egress_queue_count(), get_in_flight_count(), get_delivered_count()]
+	if has_node("StorageBar"):
+		var pct := 0.0
+		if max_storage_bytes > 0:
+			pct = clampf(float(get_storage_used_bytes()) / float(max_storage_bytes), 0.0, 1.0)
+		$StorageBar.value = pct * 100.0
